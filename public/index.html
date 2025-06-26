@@ -1,26 +1,23 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>WebDesk</title>
-    <link rel="stylesheet" href="style.css">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WebDesk</title>
+  <link rel="stylesheet" href="style.css">
 </head>
 <body>
-    <div class="container">
-        <h1>WebDesk</h1>
-        <input type="text" id="room" placeholder="Enter room code">
-        <div class="buttons">
-            <button onclick="startHost()">Start Session</button>
-            <button onclick="startClient()">Join Session</button>
-            <button id="requestCursor" onclick="requestCursorAccess()" disabled>Request Cursor Access</button>
-            <button id="fullScreen" onclick="toggleFullScreen()" disabled>Full Screen</button>
-        </div>
-        <div id="status">Enter a room code to start or join a session</div>
-        <video id="video" autoplay playsinline></video>
-        <div id="fakeCursor"></div>
-    </div>
-    <script src="/socket.io/socket.io.js"></script>
-    <script src="client.js"></script>
+  <div>
+    <input id="room" type="text" placeholder="Enter room code">
+    <button onclick="startHost()">Start Session</button>
+    <button onclick="startClient()">Join Session</button>
+    <button id="requestCursor" disabled>Request Cursor Access</button>
+    <button id="fullScreen" disabled>Full Screen</button>
+  </div>
+  <div id="status">Enter a room code to start or join a session</div>
+  <video id="video" autoplay style="display: none; max-width: 100%;"></video>
+  <div id="fakeCursor" style="display: none; position: absolute; width: 10px; height: 10px; background: red; border-radius: 50%; pointer-events: none;"></div>
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="client.js"></script>
 </body>
 </html>
