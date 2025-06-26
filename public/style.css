@@ -46,10 +46,18 @@ h1 {
 }
 
 #requestCursor {
-    background-color: #28a745; /* Green to differentiate from other buttons */
+    background-color: #28a745; /* Green for cursor button */
 }
 
 #requestCursor:disabled {
+    background-color: #cccccc;
+}
+
+#fullScreen {
+    background-color: #ffc107; /* Yellow for full-screen button */
+}
+
+#fullScreen:disabled {
     background-color: #cccccc;
 }
 
