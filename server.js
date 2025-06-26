@@ -28,7 +28,7 @@ app.get('/health', (req, res) => {
 const rooms = new Map();
 const pendingSignals = new Map();
 const connectedClients = new Map();
-const clientsWithCursorAccess = new Map(); // Track clients with cursor access per room
+const clientsWithCursorAccess = new Map();
 
 io.on('connection', socket => {
   console.log('User connected:', socket.id);
@@ -100,6 +100,7 @@ io.on('connection', socket => {
         clientsWithCursorAccess.set(room, new Set());
       }
       clientsWithCursorAccess.get(room).add(clientId);
+      console.log(`Client ${clientId} granted cursor access in room ${room}`);
     }
     io.to(clientId).emit('cursor-response', { approved });
   });
@@ -107,6 +108,7 @@ io.on('connection', socket => {
   socket.on('mouseMove', ({ room, x, y }) => {
     const clientRoom = connectedClients.get(socket.id);
     if (clientRoom === room && clientsWithCursorAccess.get(room)?.has(socket.id)) {
+      console.log(`Relaying mouseMove from ${socket.id} in room ${room}: x=${x}, y=${y}`);
       socket.to(room).emit('mouseMove', { x, y });
     } else {
       console.log(`Unauthorized mouseMove from ${socket.id} in room ${room}`);
@@ -116,6 +118,7 @@ io.on('connection', socket => {
   socket.on('mouseClick', ({ room, button }) => {
     const clientRoom = connectedClients.get(socket.id);
     if (clientRoom === room && clientsWithCursorAccess.get(room)?.has(socket.id)) {
+      console.log(`Relaying mouseClick from ${socket.id} in room ${room}: button=${button}`);
       socket.to(room).emit('mouseClick', { button });
     } else {
       console.log(`Unauthorized mouseClick from ${socket.id} in room ${room}`);
