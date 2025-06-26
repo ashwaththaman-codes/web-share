@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebDesk</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <h1>WebDesk</h1>
+        <input type="text" id="room" placeholder="Enter room code">
+        <div class="buttons">
+            <button onclick="startHost()">Start Session</button>
+            <button onclick="startClient()">Join Session</button>
+            <button id="requestCursor" onclick="requestCursorAccess()" disabled>Request Cursor Access</button>
+        </div>
+        <div id="status">Enter a room code to start or join a session</div>
+        <video id="video" autoplay playsinline></video>
+        <div id="fakeCursor"></div>
+    </div>
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="client.js"></script>
+</body>
+</html>
