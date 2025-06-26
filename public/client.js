@@ -8,14 +8,15 @@ const socket = io({
 let peerConnection;
 let room = "";
 let isJoined = false;
-let hasCursorAccess = false; // Track cursor access
+let hasCursorAccess = false;
+let cleanupCursorControl = null; // Store cleanup function
 const video = document.getElementById("video");
 const fakeCursor = document.getElementById("fakeCursor");
 const roomInput = document.getElementById("room");
 const hostButton = document.querySelector('button[onclick="startHost()"]');
 const clientButton = document.querySelector('button[onclick="startClient()"]');
 const cursorButton = document.getElementById("requestCursor");
-const statusDiv = document.getElementById("status");
+const fullScreenButton = document.getElementById("fullScreen");
 
 function updateUI(state, message) {
   console.log(`UI Update: ${state} - ${message}`);
@@ -24,9 +25,22 @@ function updateUI(state, message) {
   hostButton.disabled = state === "connected";
   clientButton.disabled = state === "connected";
   cursorButton.disabled = state !== "connected" || hasCursorAccess;
-  if (state === "error") {
+  fullScreenButton.disabled = state !== "connected" || !video.srcObject;
+  if (state === "error" || state === "disconnected") {
     video.style.display = "none";
     fakeCursor.style.display = "none";
+  }
+}
+
+function toggleFullScreen() {
+  if (!video.srcObject) return;
+  if (!document.fullscreenElement) {
+    video.requestFullscreen().catch(err => {
+      console.error("Full-screen error:", err);
+      updateUI("error", "Failed to enter full-screen mode: " + err.message);
+    });
+  } else {
+    document.exitFullscreen();
   }
 }
 
@@ -83,6 +97,7 @@ function requestCursorAccess() {
 }
 
 function setupCursorControl() {
+  if (cleanupCursorControl) cleanupCursorControl(); // Clean up existing listeners
   let lastMove = 0;
   const moveListener = e => {
     if (!hasCursorAccess || Date.now() - lastMove < 50) return;
@@ -90,18 +105,19 @@ function setupCursorControl() {
     const bounds = video.getBoundingClientRect();
     const x = ((e.clientX - bounds.left) / bounds.width).toFixed(3);
     const y = ((e.clientY - bounds.top) / bounds.height).toFixed(3);
+    console.log(`Client sending mouseMove: x=${x}, y=${y}`);
     socket.emit("mouseMove", { room, x, y });
   };
 
   const clickListener = () => {
     if (!hasCursorAccess) return;
+    console.log("Client sending mouseClick");
     socket.emit("mouseClick", { room, button: "left" });
   };
 
   video.addEventListener("mousemove", moveListener);
   video.addEventListener("click", clickListener);
 
-  // Return cleanup function to remove listeners
   return () => {
     video.removeEventListener("mousemove", moveListener);
     video.removeEventListener("click", clickListener);
@@ -110,8 +126,8 @@ function setupCursorControl() {
 
 function startHost() {
   room = roomInput.value.trim();
-  if (!room) return;
-  updateUI("isHost", "Starting session...");
+  if (!room) return alert("Please enter a room code");
+  updateUI("connected", "Starting session...");
 
   if (!navigator.mediaDevices || !window.RTCPeerConnection) {
     updateUI("error", "Your browser does not support WebRTC.");
@@ -122,7 +138,8 @@ function startHost() {
     .then(stream => {
       video.srcObject = stream;
       video.style.display = "block";
-      updateUI("Host", "Hosting session in room: " + room);
+      updateUI("connected", "Hosting session in room: " + room);
+      fullScreenButton.disabled = false;
 
       stream.getVideoTracks()[0].onended = () => {
         console.log("Screen sharing stopped");
@@ -130,9 +147,10 @@ function startHost() {
         video.style.display = "none";
         fakeCursor.style.display = "none";
         peerConnection?.close();
-        updateUI("disconnected", "Session ended. Enter a room code to start session.");
-        socket.emit("leave", { room });
+        updateUI("disconnected", "Session ended. Enter a room code to start or join again.");
+        socket.emit("leave", room);
         isJoined = false;
+        fullScreenButton.disabled = true;
       };
 
       peerConnection = createPeerConnection(true);
@@ -141,13 +159,7 @@ function startHost() {
       socket.on("signal", async ({ data }) => {
         try {
           console.log("Host received signal:", JSON.stringify(data, null, 2));
-          if (data.offer) {
-            await peerConnection.setRemoteDescription(new RTCSessionDescription(data.offer));
-            console.log("Host set remote description (offer)");
-            const answer = await peerConnection.createAnswer();
-            await peerConnection.setLocalDescription(answer);
-            socket.emit("signal", { room, data: { answer: peerConnection.localDescription } });
-          } else if (data.answer) {
+          if (data.answer) {
             await peerConnection.setRemoteDescription(new RTCSessionDescription(data.answer));
             console.log("Host set remote description (answer)");
           } else if (data.candidate) {
@@ -172,6 +184,7 @@ function startHost() {
         video.style.display = "none";
         fakeCursor.style.display = "none";
         updateUI("disconnected", "Client disconnected. Waiting for new clients.");
+        fullScreenButton.disabled = true;
       });
 
       socket.on("cursor-request", ({ clientId }) => {
@@ -230,7 +243,6 @@ function startClient(maxRetries = 3) {
   }
 
   let retries = 0;
-  let cleanupCursorControl = null;
 
   function tryConnect() {
     console.log(`Client connection attempt ${retries + 1}/${maxRetries}`);
@@ -240,8 +252,13 @@ function startClient(maxRetries = 3) {
       console.log("Client received stream:", event.streams[0]);
       video.srcObject = event.streams[0];
       video.style.display = "block";
-      updateUI("connected", "Connected to session in room: " + room);
-      cursorButton.disabled = hasCursorAccess; // Enable cursor request button
+      video.onloadedmetadata = () => {
+        updateUI("connected", "Connected to session in room: " + room);
+        fullScreenButton.disabled = false;
+        if (hasCursorAccess) {
+          cleanupCursorControl = setupCursorControl(); // Re-attach listeners if approved
+        }
+      };
     };
 
     socket.on("signal", async ({ data }) => {
@@ -286,6 +303,7 @@ function startClient(maxRetries = 3) {
       updateUI("disconnected", "Host disconnected. Enter a room code to join another session.");
       isJoined = false;
       cursorButton.disabled = true;
+      fullScreenButton.disabled = true;
     });
 
     socket.on("cursor-response", ({ approved }) => {
@@ -316,6 +334,7 @@ function startClient(maxRetries = 3) {
         isJoined = false;
         hasCursorAccess = false;
         cursorButton.disabled = true;
+        fullScreenButton.disabled = true;
         if (cleanupCursorControl) cleanupCursorControl();
         if (retries < maxRetries) {
           retries++;
