@@ -2,6 +2,7 @@ const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const path = require('path');
+const robot = require('robotjs');
 
 const app = express();
 const server = http.createServer(app);
@@ -26,8 +27,43 @@ const rooms = new Map();
 const connectedClients = new Map();
 const clientsWithCursorAccess = new Map();
 
+function startScreenCapture(room, socket) {
+  const screenSize = robot.getScreenSize();
+  const width = 1280; // Resize for performance
+  const height = Math.round((screenSize.height / screenSize.width) * width);
+
+  function capture() {
+    try {
+      const img = robot.screen.capture(0, 0, screenSize.width, screenSize.height);
+      const dataUrl = `data:image/jpeg;base64,${Buffer.from(img.image).toString('base64')}`;
+      console.log(`Sending screen update for room ${room}, image size: ${dataUrl.length} bytes`);
+      socket.to(room).emit('screen-update', { image: dataUrl });
+      socket.emit('screen-update', { image: dataUrl }); // Host also sees the screen
+    } catch (err) {
+      console.error('Screen capture error:', err.message);
+    }
+  }
+
+  const interval = setInterval(capture, 2000); // Capture every 2 seconds
+  return () => clearInterval(interval);
+}
+
 io.on('connection', socket => {
   console.log('User connected:', socket.id);
+  let captureInterval = null;
+
+  socket.on('start-host', ({ room }) => {
+    if (rooms.has(room)) {
+      console.log(`Host rejected: room ${room} already has a host`);
+      socket.emit('error', 'Room already has a host');
+      return;
+    }
+    rooms.set(room, socket.id);
+    connectedClients.set(socket.id, room);
+    socket.join(room);
+    console.log(`Host started: room=${room}, host=${socket.id}`);
+    captureInterval = startScreenCapture(room, socket);
+  });
 
   socket.on('join', ({ room, isHost }) => {
     if (connectedClients.get(socket.id) === room) {
@@ -44,6 +80,7 @@ io.on('connection', socket => {
       }
       rooms.set(room, socket.id);
       console.log(`Host added: room=${room}, host=${socket.id}`);
+      captureInterval = startScreenCapture(room, socket);
     } else if (!rooms.has(room)) {
       console.log(`No host in room: ${room}`);
       socket.emit('no-host', 'No host found in room: ' + room);
@@ -54,11 +91,6 @@ io.on('connection', socket => {
     connectedClients.set(socket.id, room);
     console.log(`User ${socket.id} joined room: ${room}`);
     socket.to(room).emit('user-joined', socket.id);
-  });
-
-  socket.on('screen-update', ({ room, image }) => {
-    console.log(`Screen update from ${socket.id} for room ${room}`);
-    socket.to(room).emit('screen-update', { image });
   });
 
   socket.on('cursor-request', ({ room }) => {
@@ -86,8 +118,18 @@ io.on('connection', socket => {
   socket.on('mouseMove', ({ room, x, y }) => {
     const clientRoom = connectedClients.get(socket.id);
     if (clientRoom === room && clientsWithCursorAccess.get(room)?.has(socket.id)) {
-      console.log(`Relaying mouseMove from ${socket.id} in room ${room}: x=${x}, y=${y}`);
-      socket.to(room).emit('mouseMove', { clientId: socket.id, x, y });
+      console.log(`Processing mouseMove from ${socket.id} in room ${room}: x=${x}, y=${y}`);
+      try {
+        const screenSize = robot.getScreenSize();
+        const targetX = Math.round(x * screenSize.width);
+        const targetY = Math.round(y * screenSize.height);
+        console.log(`Moving mouse to screen coordinates: x=${targetX}, y=${targetY}`);
+        robot.moveMouse(targetX, targetY);
+        socket.to(room).emit('mouseMove', { clientId: socket.id, x, y });
+        io.to(rooms.get(room)).emit('mouseMove', { clientId: socket.id, x, y }); // Ensure host sees cursor
+      } catch (err) {
+        console.error(`Mouse move error for ${socket.id}: ${err.message}`);
+      }
     } else {
       console.log(`Unauthorized mouseMove from ${socket.id} in room ${room}`);
     }
@@ -96,8 +138,14 @@ io.on('connection', socket => {
   socket.on('mouseClick', ({ room, button }) => {
     const clientRoom = connectedClients.get(socket.id);
     if (clientRoom === room && clientsWithCursorAccess.get(room)?.has(socket.id)) {
-      console.log(`Relaying mouseClick from ${socket.id} in room ${room}: button=${button}`);
-      socket.to(room).emit('mouseClick', { clientId: socket.id, button });
+      console.log(`Processing mouseClick from ${socket.id} in room ${room}: button=${button}`);
+      try {
+        robot.mouseClick(button);
+        socket.to(room).emit('mouseClick', { clientId: socket.id, button });
+        io.to(rooms.get(room)).emit('mouseClick', { clientId: socket.id, button }); // Ensure host sees click
+      } catch (err) {
+        console.error(`Mouse click error for ${socket.id}: ${err.message}`);
+      }
     } else {
       console.log(`Unauthorized mouseClick from ${socket.id} in room ${room}`);
     }
@@ -110,8 +158,9 @@ io.on('connection', socket => {
     if (rooms.get(room) === socket.id) {
       rooms.delete(room);
       clientsWithCursorAccess.delete(room);
-      socket.to(room).emit('user-disconnected', socket.id);
+      socket.to(room).emit('host-stopped');
       console.log(`Host removed: room=${room}`);
+      if (captureInterval) captureInterval();
     } else if (clientsWithCursorAccess.get(room)?.has(socket.id)) {
       clientsWithCursorAccess.get(room).delete(socket.id);
       socket.to(room).emit('user-disconnected', socket.id);
@@ -126,8 +175,9 @@ io.on('connection', socket => {
       if (rooms.get(room) === socket.id) {
         rooms.delete(room);
         clientsWithCursorAccess.delete(room);
-        socket.to(room).emit('user-disconnected', socket.id);
+        socket.to(room).emit('host-stopped');
         console.log(`Host disconnected: room=${room}`);
+        if (captureInterval) captureInterval();
       } else if (clientsWithCursorAccess.get(room)?.has(socket.id)) {
         clientsWithCursorAccess.get(room).delete(socket.id);
         socket.to(room).emit('user-disconnected', socket.id);
