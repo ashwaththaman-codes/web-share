@@ -21,9 +21,10 @@
             <h3>Cursor Access Requests</h3>
             <div id="requestList"></div>
         </div>
-        <video id="video" autoplay playsinline></video>
+        <canvas id="screen" style="display: none;"></canvas>
         <div id="cursorContainer"></div>
     </div>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
     <script src="/socket.io/socket.io.js"></script>
     <script src="client.js"></script>
 </body>
