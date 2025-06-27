@@ -9,6 +9,7 @@ let room = "";
 let isJoined = false;
 let hasCursorAccess = false;
 let cleanupCursorControl = null;
+let peerConnection = null;
 const canvas = document.getElementById("screen");
 const ctx = canvas.getContext("2d");
 const cursorContainer = document.getElementById("cursorContainer");
@@ -42,6 +43,10 @@ function updateUI(state, message) {
   if (state === "error" || state === "disconnected") {
     canvas.style.display = "none";
     cursorContainer.innerHTML = "";
+    if (peerConnection) {
+      peerConnection.close();
+      peerConnection = null;
+    }
   }
 }
 
@@ -101,6 +106,8 @@ function startHost() {
   navigator.mediaDevices.getDisplayMedia({ video: true })
     .then(stream => {
       console.log("Host started screen sharing");
+      peerConnection = new RTCPeerConnection();
+      stream.getTracks().forEach(track => peerConnection.addTrack(track, stream));
       const video = document.createElement("video");
       video.srcObject = stream;
       video.onloadedmetadata = () => {
@@ -114,10 +121,46 @@ function startHost() {
           requestAnimationFrame(drawFrame);
         }
         drawFrame();
-        socket.emit("start-host", { room });
-        isJoined = true;
-        socket.emit("stream", { room, streamId: socket.id });
+        updateUI("connected", "Hosting session in room: " + room);
+        fullScreenButton.disabled = false;
       };
+      video.onerror = () => {
+        console.error("Host video stream error");
+        updateUI("error", "Failed to render host screen");
+      };
+
+      peerConnection.createOffer()
+        .then(offer => peerConnection.setLocalDescription(offer))
+        .then(() => {
+          console.log("Host sending offer");
+          socket.emit("offer", { room, offer: peerConnection.localDescription });
+        })
+        .catch(err => {
+          console.error("Host offer error:", err);
+          updateUI("error", "Failed to create offer: " + err.message);
+        });
+
+      peerConnection.onicecandidate = event => {
+        if (event.candidate) {
+          console.log("Host sending ICE candidate");
+          socket.emit("ice-candidate", { room, candidate: event.candidate });
+        }
+      };
+
+      socket.on("answer", ({ answer }) => {
+        console.log("Host received answer");
+        peerConnection.setRemoteDescription(new RTCSessionDescription(answer))
+          .catch(err => console.error("Host setRemoteDescription error:", err));
+      });
+
+      socket.on("ice-candidate", ({ candidate }) => {
+        console.log("Host received ICE candidate");
+        peerConnection.addIceCandidate(new RTCIceCandidate(candidate))
+          .catch(err => console.error("Host addIceCandidate error:", err));
+      });
+
+      socket.emit("start-host", { room });
+      isJoined = true;
 
       const clientCursors = new Map();
 
@@ -176,6 +219,10 @@ function startHost() {
         fullScreenButton.disabled = true;
         cursorRequestsDiv.style.display = "none";
         stream.getTracks().forEach(track => track.stop());
+        if (peerConnection) {
+          peerConnection.close();
+          peerConnection = null;
+        }
       });
 
       socket.on("user-disconnected", (clientId) => {
@@ -199,6 +246,10 @@ function startHost() {
       stream.getVideoTracks()[0].onended = () => {
         console.log("Host screen sharing stopped");
         socket.emit("leave", room);
+        if (peerConnection) {
+          peerConnection.close();
+          peerConnection = null;
+        }
       };
     })
     .catch(err => {
@@ -216,10 +267,13 @@ function startClient(maxRetries = 3) {
 
   function tryConnect() {
     console.log(`Client connection attempt ${retries + 1}/${maxRetries}`);
-    socket.on("stream", ({ clientId, streamId }) => {
-      console.log(`Client received stream from ${clientId}, streamId=${streamId}`);
-      const video = document.createElement("video");
-      video.srcObject = new MediaStream();
+    peerConnection = new RTCPeerConnection();
+    const video = document.createElement("video");
+    video.srcObject = new MediaStream();
+
+    peerConnection.ontrack = event => {
+      console.log("Client received stream track");
+      video.srcObject.addTrack(event.track);
       video.onloadedmetadata = () => {
         video.play();
         canvas.width = video.videoWidth;
@@ -239,9 +293,37 @@ function startClient(maxRetries = 3) {
         }
       };
       video.onerror = () => {
-        console.error("Failed to load video stream");
+        console.error("Client video stream error");
         updateUI("error", "Failed to render host screen");
       };
+    };
+
+    peerConnection.onicecandidate = event => {
+      if (event.candidate) {
+        console.log("Client sending ICE candidate");
+        socket.emit("ice-candidate", { room, candidate: event.candidate });
+      }
+    };
+
+    socket.on("offer", ({ offer }) => {
+      console.log("Client received offer");
+      peerConnection.setRemoteDescription(new RTCSessionDescription(offer))
+        .then(() => peerConnection.createAnswer())
+        .then(answer => peerConnection.setLocalDescription(answer))
+        .then(() => {
+          console.log("Client sending answer");
+          socket.emit("answer", { room, answer: peerConnection.localDescription });
+        })
+        .catch(err => {
+          console.error("Client offer/answer error:", err);
+          updateUI("error", "Failed to process offer: " + err.message);
+        });
+    });
+
+    socket.on("ice-candidate", ({ candidate }) => {
+      console.log("Client received ICE candidate");
+      peerConnection.addIceCandidate(new RTCIceCandidate(candidate))
+        .catch(err => console.error("Client addIceCandidate error:", err));
     });
 
     socket.on("no-host", () => {
@@ -265,6 +347,10 @@ function startClient(maxRetries = 3) {
       isJoined = false;
       cursorButton.disabled = true;
       fullScreenButton.disabled = true;
+      if (peerConnection) {
+        peerConnection.close();
+        peerConnection = null;
+      }
     });
 
     socket.on("cursor-response", ({ approved }) => {
@@ -295,6 +381,10 @@ function startClient(maxRetries = 3) {
         cursorButton.disabled = true;
         fullScreenButton.disabled = true;
         if (cleanupCursorControl) cleanupCursorControl();
+        if (peerConnection) {
+          peerConnection.close();
+          peerConnection = null;
+        }
         if (retries < maxRetries) {
           retries++;
           console.log(`Retrying connection (attempt ${retries}/${maxRetries})`);
