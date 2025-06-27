@@ -11,13 +11,25 @@ let isJoined = false;
 let hasCursorAccess = false;
 let cleanupCursorControl = null;
 const video = document.getElementById("video");
-const fakeCursor = document.getElementById("fakeCursor");
+const cursorContainer = document.getElementById("cursorContainer");
 const roomInput = document.getElementById("room");
 const hostButton = document.querySelector('button[onclick="startHost()"]');
 const clientButton = document.querySelector('button[onclick="startClient()"]');
 const cursorButton = document.getElementById("requestCursor");
 const fullScreenButton = document.getElementById("fullScreen");
 const statusDiv = document.getElementById("status");
+const cursorRequestsDiv = document.getElementById("cursorRequests");
+const requestListDiv = document.getElementById("requestList");
+
+// Generate a random color for cursors
+function getRandomColor() {
+  const letters = '0123456789ABCDEF';
+  let color = '#';
+  for (let i = 0; i < 6; i++) {
+    color += letters[Math.floor(Math.random() * 16)];
+  }
+  return color;
+}
 
 function updateUI(state, message) {
   console.log(`UI Update: ${state} - ${message}`);
@@ -27,36 +39,26 @@ function updateUI(state, message) {
   clientButton.disabled = state === "connected";
   cursorButton.disabled = state !== "connected" || hasCursorAccess;
   fullScreenButton.disabled = state !== "connected" || !video.srcObject;
+  cursorRequestsDiv.style.display = state === "connected" && roomInput.value ? "block" : "none";
   if (state === "error" || state === "disconnected") {
     video.style.display = "none";
-    fakeCursor.style.display = "none";
-  }
-  if (state === "error") {
-    alert(`Error: ${message}`); // Alert user for errors
+    cursorContainer.innerHTML = "";
   }
 }
 
 function toggleFullScreen() {
-  console.log("Toggling full-screen");
-  if (!video.srcObject) {
-    console.log("No video stream available for full-screen");
-    updateUI("error", "No video stream available for full-screen");
-    return;
-  }
+  if (!video.srcObject) return;
   if (!document.fullscreenElement) {
     video.requestFullscreen().catch(err => {
-      console.error("Full-screen error:", err.name, err.message);
-      updateUI("error", `Failed to enter full-screen mode: ${err.message}`);
+      console.error("Full-screen error:", err);
+      updateUI("error", "Failed to enter full-screen: " + err.message);
     });
   } else {
-    document.exitFullscreen().catch(err => {
-      console.error("Exit full-screen error:", err.name, err.message);
-    });
+    document.exitFullscreen();
   }
 }
 
 function createPeerConnection(isHost) {
-  console.log(`${isHost ? "Host" : "Client"} creating peer connection`);
   const config = {
     iceServers: [
       { urls: "stun:stun.l.google.com:19302" },
@@ -69,17 +71,11 @@ function createPeerConnection(isHost) {
       }
     ]
   };
-  try {
-    peerConnection = new RTCPeerConnection(config);
-  } catch (err) {
-    console.error(`${isHost ? "Host" : "Client"} peer connection creation error:`, err.name, err.message);
-    updateUI("error", `Failed to create WebRTC peer connection: ${err.message}`);
-    return null;
-  }
+  peerConnection = new RTCPeerConnection(config);
   
   peerConnection.onicecandidate = event => {
     if (event.candidate) {
-      console.log(`${isHost ? "Host" : "Client"} sending ICE candidate`);
+      console.log(`${isHost ? "Host" : "Client"} sending ICE candidate:`, JSON.stringify(event.candidate, null, 2));
       socket.emit("signal", { room, data: { candidate: event.candidate } });
     }
   };
@@ -90,6 +86,8 @@ function createPeerConnection(isHost) {
       updateUI("error", `${isHost ? "Host" : "Client"} connection failed. Please try again.`);
       peerConnection.close();
       peerConnection = null;
+    } else if (peerConnection.connectionState === "connected") {
+      console.log(`${isHost ? "Host" : "Client"} successfully connected`);
     }
   };
 
@@ -105,11 +103,7 @@ function createPeerConnection(isHost) {
 }
 
 function requestCursorAccess() {
-  if (!room || !isJoined) {
-    console.log("Cannot request cursor access: no room or not joined");
-    updateUI("error", "Cannot request cursor access: not joined to a room");
-    return;
-  }
+  if (!room || !isJoined) return;
   console.log("Client requesting cursor access for room:", room);
   socket.emit("cursor-request", { room });
   updateUI("connected", "Waiting for host to approve cursor access...");
@@ -118,7 +112,6 @@ function requestCursorAccess() {
 
 function setupCursorControl() {
   if (cleanupCursorControl) cleanupCursorControl();
-  console.log("Setting up cursor control");
   let lastMove = 0;
   const moveListener = e => {
     if (!hasCursorAccess || Date.now() - lastMove < 50) return;
@@ -139,126 +132,129 @@ function setupCursorControl() {
   video.addEventListener("mousemove", moveListener);
   video.addEventListener("click", clickListener);
 
-  return () => {
-    console.log("Cleaning up cursor control listeners");
+  cleanupCursorControl = () => {
     video.removeEventListener("mousemove", moveListener);
     video.removeEventListener("click", clickListener);
   };
 }
 
 function startHost() {
-  console.log("startHost called at", new Date().toISOString());
   room = roomInput.value.trim();
-  if (!room) {
-    console.log("No room code entered");
-    updateUI("error", "Please enter a room code");
-    return;
-  }
-  console.log("Starting host session for room:", room);
+  if (!room) return alert("Please enter a room code");
   updateUI("connected", "Starting session...");
 
-  // Check browser support
-  if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia || !window.RTCPeerConnection) {
-    console.log("Screen sharing or WebRTC not supported");
-    updateUI("error", "Your browser does not support screen sharing or WebRTC. Please use Chrome or Firefox.");
+  if (!navigator.mediaDevices || !window.RTCPeerConnection) {
+    updateUI("error", "Your browser does not support WebRTC.");
     return;
   }
 
-  // Verify secure context
-  console.log("Checking secure context:", window.isSecureContext);
-  if (!window.isSecureContext) {
-    console.log("Non-secure context detected");
-    updateUI("error", "Screen sharing requires HTTPS. Please access via https://your-app.onrender.com.");
-    return;
-  }
-
-  // Verify Socket.IO connection
-  if (!socket.connected) {
-    console.log("Socket.IO not connected");
-    updateUI("error", "Not connected to the server. Please check your network and try again.");
-    return;
-  }
-
-  // Request screen sharing
-  console.log("Requesting screen sharing permission");
   navigator.mediaDevices.getDisplayMedia({ video: true })
     .then(stream => {
-      console.log("Screen sharing stream acquired:", stream.id);
       video.srcObject = stream;
       video.style.display = "block";
       updateUI("connected", "Hosting session in room: " + room);
       fullScreenButton.disabled = false;
 
-      // Handle stream end
       stream.getVideoTracks()[0].onended = () => {
-        console.log("Screen sharing stopped by user");
+        console.log("Screen sharing stopped");
         video.srcObject = null;
         video.style.display = "none";
-        fakeCursor.style.display = "none";
+        cursorContainer.innerHTML = "";
         peerConnection?.close();
         updateUI("disconnected", "Session ended. Enter a room code to start or join again.");
-        socket.emit("leave", { room });
+        socket.emit("leave", room);
         isJoined = false;
         fullScreenButton.disabled = true;
+        cursorRequestsDiv.style.display = "none";
       };
 
-      // Set up WebRTC
-      console.log("Creating host peer connection");
       peerConnection = createPeerConnection(true);
-      if (!peerConnection) return;
-      stream.getTracks().forEach(track => {
-        console.log("Adding track to peer connection:", track.kind, track.id);
-        peerConnection.addTrack(track, stream);
-      });
+      stream.getTracks().forEach(track => peerConnection.addTrack(track, stream));
 
-      // Handle signaling
-      socket.on("signal", async ({ data }) => {
+      const clientCursors = new Map(); // Track client cursors and colors
+
+      socket.on("signal", async ({ id, data }) => {
         try {
-          console.log("Host received signal");
+          console.log(`Host received signal from ${id}:`, JSON.stringify(data, null, 2));
           if (data.answer) {
             await peerConnection.setRemoteDescription(new RTCSessionDescription(data.answer));
             console.log("Host set remote description (answer)");
           } else if (data.candidate) {
             await peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate)).catch(err => {
-              console.error("Host ICE candidate error:", err.name, err.message);
+              console.error("Host ICE candidate error:", err);
             });
           }
         } catch (err) {
-          console.error("Host signaling error:", err.name, err.message);
+          console.error("Host signaling error:", err);
           updateUI("error", "Host connection error: " + err.message);
         }
       });
 
-      socket.on("no-host", () => {
-        console.log("No host in room:", room);
-        updateUI("error", "No host found in room: " + room);
-      });
-
-      socket.on("user-disconnected", () => {
-        console.log("Client disconnected");
-        video.srcObject = null;
-        video.style.display = "none";
-        fakeCursor.style.display = "none";
-        updateUI("disconnected", "Client disconnected. Waiting for new clients.");
-        fullScreenButton.disabled = true;
-      });
-
       socket.on("cursor-request", ({ clientId }) => {
         console.log(`Cursor access request from client ${clientId}`);
-        const approve = confirm(`Client ${clientId} requests cursor access. Approve?`);
-        socket.emit("cursor-response", { room, clientId, approved: approve });
+        const requestDiv = document.createElement("div");
+        requestDiv.innerHTML = `Client ${clientId} requests cursor access: 
+          <button onclick="approveCursor('${clientId}', true)">Approve</button>
+          <button onclick="approveCursor('${clientId}', false)">Deny</button>`;
+        requestListDiv.appendChild(requestDiv);
+        cursorRequestsDiv.style.display = "block";
       });
 
-      socket.on("error", (message) => {
-        console.log("Server error:", message);
-        updateUI("error", message);
+      window.approveCursor = (clientId, approved) => {
+        console.log(`Host approving cursor for ${clientId}: ${approved}`);
+        socket.emit("cursor-response", { room, clientId, approved });
+        const requests = requestListDiv.children;
+        for (let i = 0; i < requests.length; i++) {
+          if (requests[i].textContent.includes(clientId)) {
+            requests[i].remove();
+            break;
+          }
+        }
+        if (requestListDiv.children.length === 0) {
+          cursorRequestsDiv.style.display = "none";
+        }
+      };
+
+      socket.on("mouseMove", ({ clientId, x, y }) => {
+        let cursor = clientCursors.get(clientId);
+        if (!cursor) {
+          cursor = document.createElement("div");
+          cursor.className = "fakeCursor";
+          cursor.style.backgroundColor = getRandomColor();
+          cursorContainer.appendChild(cursor);
+          clientCursors.set(clientId, cursor);
+        }
+        const bounds = video.getBoundingClientRect();
+        cursor.style.left = bounds.left + x * bounds.width + "px";
+        cursor.style.top = bounds.top + y * bounds.height + "px";
+        cursor.style.display = "block";
       });
 
-      // Create WebRTC offer
-      console.log("Creating WebRTC offer");
+      socket.on("mouseClick", ({ clientId, button }) => {
+        console.log(`Mouse click from ${clientId}: ${button}`);
+      });
+
+      socket.on("user-disconnected", (clientId) => {
+        console.log(`Client disconnected: ${clientId}`);
+        if (clientCursors.has(clientId)) {
+          clientCursors.get(clientId).remove();
+          clientCursors.delete(clientId);
+        }
+        const requests = requestListDiv.children;
+        for (let i = 0; i < requests.length; i++) {
+          if (requests[i].textContent.includes(clientId)) {
+            requests[i].remove();
+            break;
+          }
+        }
+        if (requestListDiv.children.length === 0) {
+          cursorRequestsDiv.style.display = "none";
+        }
+      });
+
       peerConnection.createOffer()
         .then(offer => {
-          console.log("Host created offer");
+          console.log("Host created offer:", JSON.stringify(offer, null, 2));
           return peerConnection.setLocalDescription(offer);
         })
         .then(() => {
@@ -266,61 +262,27 @@ function startHost() {
           socket.emit("signal", { room, data: { offer: peerConnection.localDescription } });
         })
         .catch(err => {
-          console.error("Host offer creation error:", err.name, err.message);
-          updateUI("error", "Failed to create WebRTC offer: " + err.message);
+          console.error("Host offer creation error:", err);
+          updateUI("error", "Failed to create offer: " + err.message);
         });
 
-      // Handle mouse events
-      let lastMove = 0;
-      socket.on("mouseMove", ({ x, y }) => {
-        if (Date.now() - lastMove < 50) return;
-        lastMove = Date.now();
-        const bounds = video.getBoundingClientRect();
-        fakeCursor.style.left = bounds.left + x * bounds.width + "px";
-        fakeCursor.style.top = bounds.top + y * bounds.height + "px";
-        fakeCursor.style.display = "block";
-      });
-
-      socket.on("mouseClick", ({ button }) => {
-        console.log("Mouse click:", button);
-      });
-
-      // Join room as host
       if (!isJoined) {
-        console.log("Host emitting join event for room:", room);
         socket.emit("join", { room, isHost: true });
         isJoined = true;
       }
     })
     .catch(err => {
-      console.error("Screen sharing error:", err.name, err.message);
-      let errorMessage = "Error sharing screen: " + err.message;
-      if (err.name === "NotAllowedError") {
-        errorMessage = "Screen sharing permission denied. Please allow screen sharing and try again.";
-      } else if (err.name === "NotSupportedError") {
-        errorMessage = "Screen sharing not supported in this browser. Please use Chrome or Firefox.";
-      } else if (err.name === "NotFoundError") {
-        errorMessage = "No screen sharing sources available. Check your browser settings.";
-      } else if (err.name === "SecurityError") {
-        errorMessage = "Screen sharing requires HTTPS. Please access via https://your-app.onrender.com.";
-      }
-      updateUI("error", errorMessage);
+      console.error("Screen sharing error:", err);
+      updateUI("error", "Error sharing screen: " + err.message);
     });
 }
 
 function startClient(maxRetries = 3) {
-  console.log("startClient called");
   room = roomInput.value.trim();
-  if (!room) {
-    console.log("No room code entered");
-    updateUI("error", "Please enter a room code");
-    return;
-  }
-  console.log("Starting client session for room:", room);
+  if (!room) return alert("Please enter a room code");
   updateUI("connected", "Connecting to session...");
 
   if (!window.RTCPeerConnection) {
-    console.log("WebRTC not supported");
     updateUI("error", "Your browser does not support WebRTC.");
     return;
   }
@@ -330,38 +292,38 @@ function startClient(maxRetries = 3) {
   function tryConnect() {
     console.log(`Client connection attempt ${retries + 1}/${maxRetries}`);
     peerConnection = createPeerConnection(false);
-    if (!peerConnection) return;
 
     peerConnection.ontrack = event => {
-      console.log("Client received stream:", event.streams[0].id);
+      console.log("Client received stream:", event.streams[0]);
       video.srcObject = event.streams[0];
       video.style.display = "block";
       video.onloadedmetadata = () => {
         updateUI("connected", "Connected to session in room: " + room);
         fullScreenButton.disabled = false;
+        cursorButton.disabled = hasCursorAccess;
         if (hasCursorAccess) {
-          cleanupCursorControl = setupCursorControl();
+          setupCursorControl();
         }
       };
     };
 
-    socket.on("signal", async ({ data }) => {
+    socket.on("signal", async ({ id, data }) => {
       try {
-        console.log("Client received signal");
+        console.log(`Client received signal from ${id}:`, JSON.stringify(data, null, 2));
         if (data.offer) {
           await peerConnection.setRemoteDescription(new RTCSessionDescription(data.offer));
           console.log("Client set remote description (offer)");
           const answer = await peerConnection.createAnswer();
           await peerConnection.setLocalDescription(answer);
-          console.log("Client sending answer");
+          console.log("Client sending answer:", JSON.stringify(peerConnection.localDescription, null, 2));
           socket.emit("signal", { room, data: { answer: peerConnection.localDescription } });
         } else if (data.candidate) {
           await peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate)).catch(err => {
-            console.error("Client ICE candidate error:", err.name, err.message);
+            console.error("Client ICE candidate error:", err);
           });
         }
       } catch (err) {
-        console.error("Client signaling error:", err.name, err.message);
+        console.error("Client signaling error:", err);
         updateUI("error", "Connection error: " + err.message);
       }
     });
@@ -394,7 +356,7 @@ function startClient(maxRetries = 3) {
       console.log(`Cursor access response: ${approved ? "Approved" : "Denied"}`);
       if (approved) {
         hasCursorAccess = true;
-        cleanupCursorControl = setupCursorControl();
+        setupCursorControl();
         updateUI("connected", "Cursor access granted!");
         cursorButton.disabled = true;
       } else {
@@ -405,7 +367,6 @@ function startClient(maxRetries = 3) {
     });
 
     if (!isJoined) {
-      console.log("Client emitting join event for room:", room);
       socket.emit("join", { room, isHost: false });
       isJoined = true;
     }
@@ -431,7 +392,6 @@ function startClient(maxRetries = 3) {
   }
 
   if (socket.connected) {
-    console.log("Socket.IO already connected, starting client join");
     tryConnect();
   } else {
     socket.on("connect", () => {
@@ -446,13 +406,10 @@ socket.on("connect", () => {
 });
 
 socket.on("connect_error", err => {
-  console.error("Socket.IO connect error:", err.name, err.message);
+  console.error("Socket.IO connect error:", err.message);
   updateUI("error", "Failed to connect to the server: " + err.message);
 });
 
 socket.on("reconnect_attempt", attempt => {
   console.log("Socket.IO reconnect attempt:", attempt);
 });
-
-// Log page load
-console.log("client.js loaded at", new Date().toISOString());
