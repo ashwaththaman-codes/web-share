@@ -46,7 +46,7 @@ h1 {
 }
 
 #requestCursor {
-    background-color: #28a745; /* Green for cursor button */
+    background-color: #28a745;
 }
 
 #requestCursor:disabled {
@@ -54,7 +54,7 @@ h1 {
 }
 
 #fullScreen {
-    background-color: #ffc107; /* Yellow for full-screen button */
+    background-color: #ffc107;
 }
 
 #fullScreen:disabled {
@@ -66,6 +66,31 @@ h1 {
     color: #333;
 }
 
+#cursorRequests {
+    margin-bottom: 20px;
+    background: #f8f9fa;
+    padding: 10px;
+    border-radius: 5px;
+}
+
+#requestList button {
+    padding: 5px 10px;
+    margin: 5px;
+    border: none;
+    border-radius: 3px;
+    cursor: pointer;
+}
+
+#requestList button:first-child {
+    background-color: #28a745;
+    color: white;
+}
+
+#requestList button:last-child {
+    background-color: #dc3545;
+    color: white;
+}
+
 #video {
     width: 100%;
     max-width: 800px;
@@ -73,11 +98,14 @@ h1 {
     border: 1px solid #ccc;
 }
 
-#fakeCursor {
+#cursorContainer {
+    position: relative;
+}
+
+.fakeCursor {
     position: absolute;
     width: 10px;
     height: 10px;
-    background-color: red;
     border-radius: 50%;
     pointer-events: none;
     display: none;
