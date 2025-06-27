@@ -8,7 +8,6 @@ body {
     background-color: #f0f0f0;
 }
 
-
 .container {
     text-align: center;
     background: white;
@@ -92,7 +91,7 @@ h1 {
     color: white;
 }
 
-#video {
+#screen {
     width: 100%;
     max-width: 800px;
     display: none;
