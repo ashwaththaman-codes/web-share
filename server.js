@@ -15,16 +15,13 @@ const io = new Server(server, {
   pingInterval: 25000
 });
 
-// Serve static files from /public
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Health check endpoint for Render
 app.get('/health', (req, res) => {
   console.log('Health check requested');
   res.status(200).send('OK');
 });
 
-// Track hosts, pending signals, and clients with cursor access
 const rooms = new Map();
 const pendingSignals = new Map();
 const connectedClients = new Map();
@@ -64,7 +61,6 @@ io.on('connection', socket => {
         console.log(`Sending pending signal to client ${socket.id}:`, JSON.stringify(signal, null, 2));
         socket.emit('signal', signal);
       });
-      pendingSignals.delete(room);
     }
   });
 
@@ -109,7 +105,7 @@ io.on('connection', socket => {
     const clientRoom = connectedClients.get(socket.id);
     if (clientRoom === room && clientsWithCursorAccess.get(room)?.has(socket.id)) {
       console.log(`Relaying mouseMove from ${socket.id} in room ${room}: x=${x}, y=${y}`);
-      socket.to(room).emit('mouseMove', { x, y });
+      socket.to(room).emit('mouseMove', { clientId: socket.id, x, y });
     } else {
       console.log(`Unauthorized mouseMove from ${socket.id} in room ${room}`);
     }
@@ -119,7 +115,7 @@ io.on('connection', socket => {
     const clientRoom = connectedClients.get(socket.id);
     if (clientRoom === room && clientsWithCursorAccess.get(room)?.has(socket.id)) {
       console.log(`Relaying mouseClick from ${socket.id} in room ${room}: button=${button}`);
-      socket.to(room).emit('mouseClick', { button });
+      socket.to(room).emit('mouseClick', { clientId: socket.id, button });
     } else {
       console.log(`Unauthorized mouseClick from ${socket.id} in room ${room}`);
     }
@@ -137,6 +133,7 @@ io.on('connection', socket => {
       console.log(`Host removed: room=${room}`);
     } else if (clientsWithCursorAccess.get(room)?.has(socket.id)) {
       clientsWithCursorAccess.get(room).delete(socket.id);
+      socket.to(room).emit('user-disconnected', socket.id);
     }
   });
 
@@ -153,6 +150,7 @@ io.on('connection', socket => {
         console.log(`Host disconnected: room=${room}`);
       } else if (clientsWithCursorAccess.get(room)?.has(socket.id)) {
         clientsWithCursorAccess.get(room).delete(socket.id);
+        socket.to(room).emit('user-disconnected', socket.id);
       }
     }
   });
