@@ -1,334 +1,164 @@
-const socket = io({
+const express = require('express');
+const http = require('http');
+const { Server } = require('socket.io');
+const path = require('path');
+
+const app = express();
+const server = http.createServer(app);
+const io = new Server(server, {
+  cors: {
+    origin: "*",
+    methods: ["GET", "POST"]
+  },
   transports: ['websocket'],
-  upgrade: false,
-  reconnection: true,
-  reconnectionAttempts: 5,
-  reconnectionDelay: 1000
+  pingTimeout: 60000,
+  pingInterval: 25000
 });
-let room = "";
-let isJoined = false;
-let hasCursorAccess = false;
-let cleanupCursorControl = null;
-const canvas = document.getElementById("screen");
-const ctx = canvas.getContext("2d");
-const cursorContainer = document.getElementById("cursorContainer");
-const roomInput = document.getElementById("room");
-const hostButton = document.querySelector('button[onclick="startHost()"]');
-const clientButton = document.querySelector('button[onclick="startClient()"]');
-const cursorButton = document.getElementById("requestCursor");
-const fullScreenButton = document.getElementById("fullScreen");
-const statusDiv = document.getElementById("status");
-const cursorRequestsDiv = document.getElementById("cursorRequests");
-const requestListDiv = document.getElementById("requestList");
 
-function getRandomColor() {
-  const letters = '0123456789ABCDEF';
-  let color = '#';
-  for (let i = 0; i < 6; i++) {
-    color += letters[Math.floor(Math.random() * 16)];
-  }
-  return color;
-}
+app.use(express.static(path.join(__dirname, 'public')));
 
-function updateUI(state, message) {
-  console.log(`UI Update: ${state} - ${message}`);
-  statusDiv.textContent = message;
-  roomInput.disabled = state === "connected";
-  hostButton.disabled = state === "connected";
-  clientButton.disabled = state === "connected";
-  cursorButton.disabled = state !== "connected" || hasCursorAccess;
-  fullScreenButton.disabled = state !== "connected" || !canvas.style.display.includes("block");
-  cursorRequestsDiv.style.display = state === "connected" && roomInput.value ? "block" : "none";
-  if (state === "error" || state === "disconnected") {
-    canvas.style.display = "none";
-    cursorContainer.innerHTML = "";
-  }
-}
+app.get('/health', (req, res) => {
+  console.log('Health check requested');
+  res.status(200).send('OK');
+});
 
-function toggleFullScreen() {
-  if (canvas.style.display === "none") return;
-  if (!document.fullscreenElement) {
-    canvas.requestFullscreen().catch(err => {
-      console.error("Full-screen error:", err);
-      updateUI("error", "Failed to enter full-screen: " + err.message);
-    });
-  } else {
-    document.exitFullscreen();
-  }
-}
+const rooms = new Map();
+const connectedClients = new Map();
+const clientsWithCursorAccess = new Map();
 
-function requestCursorAccess() {
-  if (!room || !isJoined) return;
-  console.log("Client requesting cursor access for room:", room);
-  socket.emit("cursor-request", { room });
-  updateUI("connected", "Waiting for host to approve cursor access...");
-  cursorButton.disabled = true;
-}
+io.on('connection', socket => {
+  console.log('User connected:', socket.id);
 
-function setupCursorControl() {
-  if (cleanupCursorControl) cleanupCursorControl();
-  let lastMove = 0;
-  const moveListener = e => {
-    if (!hasCursorAccess || Date.now() - lastMove < 50) return;
-    lastMove = Date.now();
-    const bounds = canvas.getBoundingClientRect();
-    const x = ((e.clientX - bounds.left) / bounds.width).toFixed(3);
-    const y = ((e.clientY - bounds.top) / bounds.height).toFixed(3);
-    console.log(`Client sending mouseMove: x=${x}, y=${y}`);
-    socket.emit("mouseMove", { room, x, y });
-  };
+  socket.on('start-host', ({ room }) => {
+    if (rooms.has(room)) {
+      console.log(`Host rejected: room ${room} already has a host`);
+      socket.emit('error', 'Room already has a host');
+      return;
+    }
+    rooms.set(room, socket.id);
+    connectedClients.set(socket.id, room);
+    socket.join(room);
+    console.log(`Host started: room=${room}, host=${socket.id}`);
+  });
 
-  const clickListener = () => {
-    if (!hasCursorAccess) return;
-    console.log("Client sending mouseClick");
-    socket.emit("mouseClick", { room, button: "left" });
-  };
-
-  canvas.addEventListener("mousemove", moveListener);
-  canvas.addEventListener("click", clickListener);
-
-  cleanupCursorControl = () => {
-    canvas.removeEventListener("mousemove", moveListener);
-    canvas.removeEventListener("click", clickListener);
-  };
-}
-
-function startHost() {
-  room = roomInput.value.trim();
-  if (!room) return alert("Please enter a room code");
-  updateUI("connected", "Starting session...");
-
-  if (!navigator.mediaDevices) {
-    updateUI("error", "Your browser does not support screen capture.");
-    return;
-  }
-
-  navigator.mediaDevices.getDisplayMedia({ video: true })
-    .then(stream => {
-      const video = document.createElement("video");
-      video.srcObject = stream;
-      video.play();
-      canvas.width = 1280; // Set canvas size
-      canvas.height = 720;
-      canvas.style.display = "block";
-      updateUI("connected", "Hosting session in room: " + room);
-      fullScreenButton.disabled = false;
-
-      const clientCursors = new Map();
-
-      function captureScreen() {
-        html2canvas(video).then(canvasElement => {
-          const dataUrl = canvasElement.toDataURL("image/jpeg", 0.5); // Compress image
-          socket.emit("screen-update", { room, image: dataUrl });
-        }).catch(err => {
-          console.error("Screen capture error:", err);
-        });
-      }
-
-      video.onloadedmetadata = () => {
-        setInterval(captureScreen, 2000); // Capture every 2 seconds
-      };
-
-      stream.getVideoTracks()[0].onended = () => {
-        console.log("Screen sharing stopped");
-        canvas.style.display = "none";
-        cursorContainer.innerHTML = "";
-        updateUI("disconnected", "Session ended. Enter a room code to start or join again.");
-        socket.emit("leave", room);
-        isJoined = false;
-        fullScreenButton.disabled = true;
-        cursorRequestsDiv.style.display = "none";
-        video.srcObject = null;
-      };
-
-      socket.on("cursor-request", ({ clientId }) => {
-        console.log(`Cursor access request from client ${clientId}`);
-        const requestDiv = document.createElement("div");
-        requestDiv.innerHTML = `Client ${clientId} requests cursor access: 
-          <button onclick="approveCursor('${clientId}', true)">Approve</button>
-          <button onclick="approveCursor('${clientId}', false)">Deny</button>`;
-        requestListDiv.appendChild(requestDiv);
-        cursorRequestsDiv.style.display = "block";
-      });
-
-      window.approveCursor = (clientId, approved) => {
-        console.log(`Host approving cursor for ${clientId}: ${approved}`);
-        socket.emit("cursor-response", { room, clientId, approved });
-        const requests = requestListDiv.children;
-        for (let i = 0; i < requests.length; i++) {
-          if (requests[i].textContent.includes(clientId)) {
-            requests[i].remove();
-            break;
-          }
-        }
-        if (requestListDiv.children.length === 0) {
-          cursorRequestsDiv.style.display = "none";
-        }
-      };
-
-      socket.on("mouseMove", ({ clientId, x, y }) => {
-        let cursor = clientCursors.get(clientId);
-        if (!cursor) {
-          cursor = document.createElement("div");
-          cursor.className = "fakeCursor";
-          cursor.style.backgroundColor = getRandomColor();
-          cursorContainer.appendChild(cursor);
-          clientCursors.set(clientId, cursor);
-        }
-        const bounds = canvas.getBoundingClientRect();
-        cursor.style.left = bounds.left + x * bounds.width + "px";
-        cursor.style.top = bounds.top + y * bounds.height + "px";
-        cursor.style.display = "block";
-        // Simulate mouse movement on host (browser-based, limited)
-        console.log(`Simulating mouse move for ${clientId}: x=${x}, y=${y}`);
-      });
-
-      socket.on("mouseClick", ({ clientId, button }) => {
-        console.log(`Simulating mouse click for ${clientId}: ${button}`);
-        // Simulate click (browser-based, limited to DOM)
-        const bounds = canvas.getBoundingClientRect();
-        const event = new MouseEvent("click", {
-          clientX: bounds.left + x * bounds.width,
-          clientY: bounds.top + y * bounds.height,
-          button: button === "left" ? 0 : 2
-        });
-        canvas.dispatchEvent(event);
-      });
-
-      socket.on("user-disconnected", (clientId) => {
-        console.log(`Client disconnected: ${clientId}`);
-        if (clientCursors.has(clientId)) {
-          clientCursors.get(clientId).remove();
-          clientCursors.delete(clientId);
-        }
-        const requests = requestListDiv.children;
-        for (let i = 0; i < requests.length; i++) {
-          if (requests[i].textContent.includes(clientId)) {
-            requests[i].remove();
-            break;
-          }
-        }
-        if (requestListDiv.children.length === 0) {
-          cursorRequestsDiv.style.display = "none";
-        }
-      });
-
-      if (!isJoined) {
-        socket.emit("join", { room, isHost: true });
-        isJoined = true;
-      }
-    })
-    .catch(err => {
-      console.error("Screen sharing error:", err);
-      updateUI("error", "Error sharing screen: " + err.message);
-    });
-}
-
-function startClient(maxRetries = 3) {
-  room = roomInput.value.trim();
-  if (!room) return alert("Please enter a room code");
-  updateUI("connected", "Connecting to session...");
-
-  let retries = 0;
-
-  function tryConnect() {
-    console.log(`Client connection attempt ${retries + 1}/${maxRetries}`);
-    socket.on("screen-update", ({ image }) => {
-      const img = new Image();
-      img.onload = () => {
-        canvas.width = img.width;
-        canvas.height = img.height;
-        ctx.drawImage(img, 0, 0);
-        canvas.style.display = "block";
-        updateUI("connected", "Connected to session in room: " + room);
-        fullScreenButton.disabled = false;
-        cursorButton.disabled = hasCursorAccess;
-        if (hasCursorAccess) {
-          setupCursorControl();
-        }
-      };
-      img.src = image;
-    });
-
-    socket.on("no-host", () => {
-      console.log("No host in room:", room);
-      updateUI("error", "No host found in room: " + room);
-      if (retries < maxRetries) {
-        retries++;
-        console.log(`Retrying connection (attempt ${retries}/${maxRetries})`);
-        setTimeout(tryConnect, 2000);
-      } else {
-        updateUI("error", "No host found after retries. Please try again.");
-      }
-    });
-
-    socket.on("user-disconnected", () => {
-      console.log("Host disconnected");
-      canvas.style.display = "none";
-      if (cleanupCursorControl) cleanupCursorControl();
-      hasCursorAccess = false;
-      updateUI("disconnected", "Host disconnected. Enter a room code to join another session.");
-      isJoined = false;
-      cursorButton.disabled = true;
-      fullScreenButton.disabled = true;
-    });
-
-    socket.on("cursor-response", ({ approved }) => {
-      console.log(`Cursor access response: ${approved ? "Approved" : "Denied"}`);
-      if (approved) {
-        hasCursorAccess = true;
-        setupCursorControl();
-        updateUI("connected", "Cursor access granted!");
-        cursorButton.disabled = true;
-      } else {
-        hasCursorAccess = false;
-        updateUI("connected", "Cursor access denied. Try again?");
-        cursorButton.disabled = false;
-      }
-    });
-
-    if (!isJoined) {
-      socket.emit("join", { room, isHost: false });
-      isJoined = true;
+  socket.on('join', ({ room, isHost }) => {
+    if (connectedClients.get(socket.id) === room) {
+      console.log(`Duplicate join attempt by ${socket.id} for room ${room}`);
+      return;
     }
 
-    setTimeout(() => {
-      if (!isJoined) {
-        console.log("Connection timeout after 30 seconds");
-        updateUI("error", "Connection timed out. Please try again.");
-        isJoined = false;
-        hasCursorAccess = false;
-        cursorButton.disabled = true;
-        fullScreenButton.disabled = true;
-        if (cleanupCursorControl) cleanupCursorControl();
-        if (retries < maxRetries) {
-          retries++;
-          console.log(`Retrying connection (attempt ${retries}/${maxRetries})`);
-          setTimeout(tryConnect, 2000);
-        }
+    console.log(`Join request: room=${room}, isHost=${isHost}, socket=${socket.id}`);
+    if (isHost) {
+      if (rooms.has(room)) {
+        console.log(`Host rejected: room ${room} already has a host`);
+        socket.emit('error', 'Room already has a host');
+        return;
       }
-    }, 30000);
-  }
+      rooms.set(room, socket.id);
+      console.log(`Host added: room=${room}, host=${socket.id}`);
+    } else if (!rooms.has(room)) {
+      console.log(`No host in room: ${room}`);
+      socket.emit('no-host', 'No host found in room: ' + room);
+      return;
+    }
 
-  if (socket.connected) {
-    tryConnect();
-  } else {
-    socket.on("connect", () => {
-      console.log("Socket.IO connected, starting client join");
-      tryConnect();
-    });
-  }
-}
+    socket.join(room);
+    connectedClients.set(socket.id, room);
+    console.log(`User ${socket.id} joined room: ${room}`);
+    socket.to(room).emit('user-joined', socket.id);
+  });
 
-socket.on("connect", () => {
-  console.log("Socket.IO connected");
+  socket.on('cursor-request', ({ room }) => {
+    console.log(`Cursor request from ${socket.id} for room ${room}`);
+    const hostId = rooms.get(room);
+    if (hostId) {
+      io.to(hostId).emit('cursor-request', { clientId: socket.id });
+    } else {
+      socket.emit('no-host', 'No host found in room: ' + room);
+    }
+  });
+
+  socket.on('cursor-response', ({ room, clientId, approved }) => {
+    console.log(`Cursor response from host for client ${clientId} in room ${room}: ${approved}`);
+    if (approved) {
+      if (!clientsWithCursorAccess.has(room)) {
+        clientsWithCursorAccess.set(room, new Set());
+      }
+      clientsWithCursorAccess.get(room).add(clientId);
+      console.log(`Client ${clientId} granted cursor access in room ${room}`);
+    }
+    io.to(clientId).emit('cursor-response', { approved });
+  });
+
+  socket.on('mouseMove', ({ room, x, y }) => {
+    const clientRoom = connectedClients.get(socket.id);
+    if (clientRoom === room && clientsWithCursorAccess.get(room)?.has(socket.id)) {
+      console.log(`Relaying mouseMove from ${socket.id} in room ${room}: x=${x}, y=${y}`);
+      socket.to(room).emit('mouseMove', { clientId: socket.id, x, y });
+      io.to(rooms.get(room)).emit('mouseMove', { clientId: socket.id, x, y });
+    } else {
+      console.log(`Unauthorized mouseMove from ${socket.id} in room ${room}`);
+    }
+  });
+
+  socket.on('mouseClick', ({ room, button }) => {
+    const clientRoom = connectedClients.get(socket.id);
+    if (clientRoom === room && clientsWithCursorAccess.get(room)?.has(socket.id)) {
+      console.log(`Relaying mouseClick from ${socket.id} in room ${room}: button=${button}`);
+      socket.to(room).emit('mouseClick', { clientId: socket.id, button });
+      io.to(rooms.get(room)).emit('mouseClick', { clientId: socket.id, button });
+    } else {
+      console.log(`Unauthorized mouseClick from ${socket.id} in room ${room}`);
+    }
+  });
+
+  socket.on('stream', ({ room, streamId }) => {
+    console.log(`Stream received from ${socket.id} in room ${room}: streamId=${streamId}`);
+    socket.to(room).emit('stream', { clientId: socket.id, streamId });
+  });
+
+  socket.on('leave', ({ room }) => {
+    console.log(`Leave request: room=${room}, socket=${socket.id}`);
+    socket.leave(room);
+    connectedClients.delete(socket.id);
+    if (rooms.get(room) === socket.id) {
+      rooms.delete(room);
+      clientsWithCursorAccess.delete(room);
+      socket.to(room).emit('host-stopped');
+      console.log(`Host removed: room=${room}`);
+    } else if (clientsWithCursorAccess.get(room)?.has(socket.id)) {
+      clientsWithCursorAccess.get(room).delete(socket.id);
+      socket.to(room).emit('user-disconnected', socket.id);
+    }
+  });
+
+  socket.on('disconnect', () => {
+    console.log('User disconnected:', socket.id);
+    const room = connectedClients.get(socket.id);
+    if (room) {
+      connectedClients.delete(socket.id);
+      if (rooms.get(room) === socket.id) {
+        rooms.delete(room);
+        clientsWithCursorAccess.delete(room);
+        socket.to(room).emit('host-stopped');
+        console.log(`Host disconnected: room=${room}`);
+      } else if (clientsWithCursorAccess.get(room)?.has(socket.id)) {
+        clientsWithCursorAccess.get(room).delete(socket.id);
+        socket.to(room).emit('user-disconnected', socket.id);
+      }
+    }
+  });
+
+  socket.on('error', err => {
+    console.error('Socket error:', err);
+  });
 });
 
-socket.on("connect_error", err => {
-  console.error("Socket.IO connect error:", err.message);
-  updateUI("error", "Failed to connect to the server: " + err.message);
+const port = process.env.PORT || 3000;
+server.listen(port, '0.0.0.0', () => {
+  console.log(`Server running on port ${port}`);
 });
 
-socket.on("reconnect_attempt", attempt => {
-  console.log("Socket.IO reconnect attempt:", attempt);
+server.on('listening', () => {
+  console.log(`Server confirmed listening on port ${port}`);
 });
