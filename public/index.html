@@ -15,6 +15,21 @@
             <button onclick="startClient()">Join Session</button>
             <button id="requestCursor" onclick="requestCursorAccess()" disabled>Request Cursor Access</button>
             <button id="fullScreen" onclick="toggleFullScreen()" disabled>Full Screen</button>
+            <div class="dropdown">
+                <button class="dropbtn">More</button>
+                <div class="dropdown-content">
+                    <button onclick="toggleDevelopers()">Developers</button>
+                </div>
+            </div>
+        </div>
+        <div id="developers" style="display: none;">
+            <h3>Our Team</h3>
+            <ul>
+                <li>Ashwaththaman - Lead ML and DL Developer</li>
+                <li>Piriyaranjan - Data Analyst and Lead Website Developer</li>
+                <li>Rathish - Lead Web Developer</li>
+                <li>Ramasubramanian - Assistant Tea Boy</li>
+            </ul>
         </div>
         <div id="status">Enter a room code to start or join a session</div>
         <div id="cursorRequests" style="display: none;">
@@ -24,8 +39,13 @@
         <canvas id="screen" style="display: none;"></canvas>
         <div id="cursorContainer"></div>
     </div>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
     <script src="/socket.io/socket.io.js"></script>
     <script src="client.js"></script>
+    <script>
+        function toggleDevelopers() {
+            const developersDiv = document.getElementById("developers");
+            developersDiv.style.display = developersDiv.style.display === "none" ? "block" : "none";
+        }
+    </script>
 </body>
 </html>
