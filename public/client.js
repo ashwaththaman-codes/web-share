@@ -98,48 +98,28 @@ function startHost() {
   if (!room) return alert("Please enter a room code");
   updateUI("connected", "Starting session...");
 
-  if (!navigator.mediaDevices) {
-    updateUI("error", "Your browser does not support screen capture.");
-    return;
-  }
-
   navigator.mediaDevices.getDisplayMedia({ video: true })
     .then(stream => {
+      console.log("Host started screen sharing");
       const video = document.createElement("video");
       video.srcObject = stream;
-      video.play();
-      canvas.width = 1280; // Set canvas size
-      canvas.height = 720;
-      canvas.style.display = "block";
-      updateUI("connected", "Hosting session in room: " + room);
-      fullScreenButton.disabled = false;
+      video.onloadedmetadata = () => {
+        video.play();
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        canvas.style.display = "block";
+        function drawFrame() {
+          if (canvas.style.display === "none") return;
+          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+          requestAnimationFrame(drawFrame);
+        }
+        drawFrame();
+        socket.emit("start-host", { room });
+        isJoined = true;
+        socket.emit("stream", { room, streamId: socket.id });
+      };
 
       const clientCursors = new Map();
-
-      function captureScreen() {
-        html2canvas(video).then(canvasElement => {
-          const dataUrl = canvasElement.toDataURL("image/jpeg", 0.5); // Compress image
-          socket.emit("screen-update", { room, image: dataUrl });
-        }).catch(err => {
-          console.error("Screen capture error:", err);
-        });
-      }
-
-      video.onloadedmetadata = () => {
-        setInterval(captureScreen, 2000); // Capture every 2 seconds
-      };
-
-      stream.getVideoTracks()[0].onended = () => {
-        console.log("Screen sharing stopped");
-        canvas.style.display = "none";
-        cursorContainer.innerHTML = "";
-        updateUI("disconnected", "Session ended. Enter a room code to start or join again.");
-        socket.emit("leave", room);
-        isJoined = false;
-        fullScreenButton.disabled = true;
-        cursorRequestsDiv.style.display = "none";
-        video.srcObject = null;
-      };
 
       socket.on("cursor-request", ({ clientId }) => {
         console.log(`Cursor access request from client ${clientId}`);
@@ -179,20 +159,23 @@ function startHost() {
         cursor.style.left = bounds.left + x * bounds.width + "px";
         cursor.style.top = bounds.top + y * bounds.height + "px";
         cursor.style.display = "block";
-        // Simulate mouse movement on host (browser-based, limited)
-        console.log(`Simulating mouse move for ${clientId}: x=${x}, y=${y}`);
+        console.log(`Host received mouseMove from ${clientId}: x=${x}, y=${y}`);
       });
 
       socket.on("mouseClick", ({ clientId, button }) => {
-        console.log(`Simulating mouse click for ${clientId}: ${button}`);
-        // Simulate click (browser-based, limited to DOM)
-        const bounds = canvas.getBoundingClientRect();
-        const event = new MouseEvent("click", {
-          clientX: bounds.left + x * bounds.width,
-          clientY: bounds.top + y * bounds.height,
-          button: button === "left" ? 0 : 2
-        });
-        canvas.dispatchEvent(event);
+        console.log(`Host received mouseClick from ${clientId}: ${button}`);
+      });
+
+      socket.on("host-stopped", () => {
+        console.log("Host session stopped");
+        canvas.style.display = "none";
+        cursorContainer.innerHTML = "";
+        updateUI("disconnected", "Session ended. Enter a room code to start or join again.");
+        socket.emit("leave", room);
+        isJoined = false;
+        fullScreenButton.disabled = true;
+        cursorRequestsDiv.style.display = "none";
+        stream.getTracks().forEach(track => track.stop());
       });
 
       socket.on("user-disconnected", (clientId) => {
@@ -213,14 +196,14 @@ function startHost() {
         }
       });
 
-      if (!isJoined) {
-        socket.emit("join", { room, isHost: true });
-        isJoined = true;
-      }
+      stream.getVideoTracks()[0].onended = () => {
+        console.log("Host screen sharing stopped");
+        socket.emit("leave", room);
+      };
     })
     .catch(err => {
-      console.error("Screen sharing error:", err);
-      updateUI("error", "Error sharing screen: " + err.message);
+      console.error("Host screen sharing error:", err);
+      updateUI("error", "Failed to start screen sharing: " + err.message);
     });
 }
 
@@ -233,13 +216,21 @@ function startClient(maxRetries = 3) {
 
   function tryConnect() {
     console.log(`Client connection attempt ${retries + 1}/${maxRetries}`);
-    socket.on("screen-update", ({ image }) => {
-      const img = new Image();
-      img.onload = () => {
-        canvas.width = img.width;
-        canvas.height = img.height;
-        ctx.drawImage(img, 0, 0);
+    socket.on("stream", ({ clientId, streamId }) => {
+      console.log(`Client received stream from ${clientId}, streamId=${streamId}`);
+      const video = document.createElement("video");
+      video.srcObject = new MediaStream();
+      video.onloadedmetadata = () => {
+        video.play();
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
         canvas.style.display = "block";
+        function drawFrame() {
+          if (canvas.style.display === "none") return;
+          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+          requestAnimationFrame(drawFrame);
+        }
+        drawFrame();
         updateUI("connected", "Connected to session in room: " + room);
         fullScreenButton.disabled = false;
         cursorButton.disabled = hasCursorAccess;
@@ -247,7 +238,10 @@ function startClient(maxRetries = 3) {
           setupCursorControl();
         }
       };
-      img.src = image;
+      video.onerror = () => {
+        console.error("Failed to load video stream");
+        updateUI("error", "Failed to render host screen");
+      };
     });
 
     socket.on("no-host", () => {
@@ -262,7 +256,7 @@ function startClient(maxRetries = 3) {
       }
     });
 
-    socket.on("user-disconnected", () => {
+    socket.on("host-stopped", () => {
       console.log("Host disconnected");
       canvas.style.display = "none";
       if (cleanupCursorControl) cleanupCursorControl();
