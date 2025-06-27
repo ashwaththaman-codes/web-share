@@ -112,9 +112,19 @@ io.on('connection', socket => {
     }
   });
 
-  socket.on('stream', ({ room, streamId }) => {
-    console.log(`Stream received from ${socket.id} in room ${room}: streamId=${streamId}`);
-    socket.to(room).emit('stream', { clientId: socket.id, streamId });
+  socket.on('offer', ({ room, offer }) => {
+    console.log(`Relaying offer from ${socket.id} in room ${room}`);
+    socket.to(room).emit('offer', { offer });
+  });
+
+  socket.on('answer', ({ room, answer }) => {
+    console.log(`Relaying answer from ${socket.id} in room ${room}`);
+    socket.to(room).emit('answer', { answer });
+  });
+
+  socket.on('ice-candidate', ({ room, candidate }) => {
+    console.log(`Relaying ICE candidate from ${socket.id} in room ${room}`);
+    socket.to(room).emit('ice-candidate', { candidate });
   });
 
   socket.on('leave', ({ room }) => {
